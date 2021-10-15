@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------------------------ #
-#                              Overwatch Map Cleaner v1.0                              #
+#                              Overwatch Map Cleaner v1.1                              #
 #                                    by stickercake                                    #
 #                                                                                      #
 #         IMPORTANT: Click [Window] > [Toggle System Console] to see progress!         #
@@ -93,7 +93,7 @@ missing_tex_name = root.name + '_BROKEN'
 missing_tex = D.objects.get(missing_tex_name)
 if not missing_tex:
     missing_tex = D.objects.new(missing_tex_name, None)
-    missing_tex.hide_viewport = False
+    missing_tex.hide_viewport = True
     collection = root.users_collection[0]
     collection.objects.link(missing_tex)
     missing_tex.parent = root
@@ -149,7 +149,7 @@ def find_untextured_mats():
 # Prints an action performed on obj.
 def print_action(obj, name, force=False):
     if Print_Actions or force:
-        print(name.ljust() + obj.name)
+        print(name.ljust(9) + obj.name)
 
 # Sets child's parent to obj's parent.
 def parent_up(obj, child):
@@ -165,16 +165,11 @@ def clean(obj):
     is_armature = obj.type == 'ARMATURE'
     arm_children = []
     
-    if Keep_Prop_Armatures and is_armature and childcount == 1:
-        if len(children[0].vertex_groups) > 1:
-            count_up()
-            return obj
-    
     for ch in children:
         result = clean(ch)
         if result is None:
             childcount -= 1
-        elif is_armature:
+        elif is_armature and not Keep_Prop_Armatures:
             if len(ch.vertex_groups) <= 1:
                 parent_up(obj, ch)
                 ch.modifiers.clear()
@@ -189,6 +184,11 @@ def clean(obj):
                 child = result[0]
         else:
             child = result
+    
+    if Keep_Prop_Armatures and is_armature and childcount == 1:
+        if len(child.vertex_groups) > 1:
+            count_up()
+            return obj
     
     # Remove untextured meshes
     if childcount == 0 and obj.material_slots:
@@ -402,8 +402,9 @@ def finish_deletions():
     print('Deleting {0} objects...'.format(rmv_count))
     
     for obj in to_remove:
-        obj.users_collection[0].objects.unlink(obj)
-        #D.objects.remove(obj)
+        if obj.users:
+            obj.users_collection[0].objects.unlink(obj)
+            #D.objects.remove(obj)
         count += 1
         
         if count % 1000 == 0:
@@ -428,7 +429,7 @@ def run():
     #print('Clearing all orphaned data-blocks without any users from the file...')
     #bpy.ops.outliner.orphans_purge(C.copy())
     
-    if Join_Map_Mesh > 0 and len(merge) > 1:
+    if Join_Map_Mesh > 0 and len(merge) > Join_Map_Mesh:
         print('Joining {0} map objects...'.format(len(merge)))
         i = 0
         for merge_part in split(merge, Join_Map_Mesh):
@@ -461,7 +462,7 @@ def run():
     
     if broken_groups:
         print((('There are {0} objects with broken materials located in '
-                '"{1}" that need to be manually repaired/removed'))
+                '"{1}" that need to be manually repaired/removed.'))
             .format(len(broken_groups), missing_tex_name))
     
     print('For optimal performance, save and reload the .blend file to purge all unused data-blocks.')
