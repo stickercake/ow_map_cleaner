@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------------------------ #
-#                              Overwatch Map Cleaner v1.1                              #
+#                              Overwatch Map Cleaner v1.2                              #
 #                                    by stickercake                                    #
 #                                                                                      #
 #         IMPORTANT: Click [Window] > [Toggle System Console] to see progress!         #
@@ -56,6 +56,7 @@ untextures = [
     '000000001B8D', # "players only, no walk, no grapple"
     '000000001BA4', # "players only"
     '000000007906', # "no turrets"
+    '00000001F155', # "water"
 ]
 
 
@@ -122,6 +123,8 @@ def find_untextured_mats():
                 albedo = mat.node_tree.nodes.get('Albedo + AO')
                 if not albedo:
                     albedo = mat.node_tree.nodes.get('Decal AO')
+                    if not albedo:
+                        albedo = mat.node_tree.nodes.get('Shader Normal')
                 
                 if albedo and albedo.image:
                     name = albedo.image.name
@@ -159,6 +162,7 @@ def parent_up(obj, child):
 
 
 # Cleanup obj and its descendants.
+# Returns whatever obj is replaced by (Object | list of Objects | None).
 def clean(obj):
     children = obj.children
     childcount = len(children)
@@ -169,15 +173,24 @@ def clean(obj):
         result = clean(ch)
         if result is None:
             childcount -= 1
-        elif is_armature and not Keep_Prop_Armatures:
-            if len(ch.vertex_groups) <= 1:
+        elif is_armature:
+            vgroups = ch.vertex_groups
+            groupcount = len(vgroups)
+            
+            # Shatter physics meshes are controlled by more than one bone
+            if childcount > 1 and groupcount > 1:
+                print(obj.name)
+                to_remove.add(ch)
+                childcount -= 1
+            
+            if Keep_Prop_Armatures:
+                child = ch
+            elif groupcount <= 1:
                 parent_up(obj, ch)
                 ch.modifiers.clear()
                 ch.vertex_groups.clear()
                 arm_children.append(ch)
-            else:
-                to_remove.add(ch)
-            childcount -= 1
+                childcount -= 1
         elif type(result) is list:
             childcount += len(result) - 1
             if result:
@@ -238,14 +251,14 @@ def clean(obj):
             reuse_mesh(child)
     
     # Remove Armatures
-    if is_armature:
+    if is_armature and not Keep_Prop_Armatures:
         print_action(obj, 'Physics')
         to_remove.add(obj)
         count_up(True)
         return arm_children
     
     # Remove Empties without children
-    elif childcount == 0 and obj.type == 'EMPTY' and obj != objects_parent:
+    elif childcount == 0 and obj.type != 'MESH' and obj != objects_parent:
         print_action(obj, 'Empty')
         to_remove.add(obj)
         count_up(True)
