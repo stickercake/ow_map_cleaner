@@ -89,6 +89,7 @@ mesh_joins = dict()
 mats_missing = list()
 blacklist = list()
 broken_groups = dict()
+delete_childless = ["EMPTY", "ARMATURE"]
 
 missing_tex_name = root.name + '_BROKEN'
 missing_tex = D.objects.get(missing_tex_name)
@@ -258,7 +259,7 @@ def clean(obj):
         return arm_children
     
     # Remove Empties without children
-    elif childcount == 0 and obj.type != 'MESH' and obj != objects_parent:
+    elif childcount == 0 and obj.type in delete_childless and obj != objects_parent:
         print_action(obj, 'Empty')
         to_remove.add(obj)
         count_up(True)
