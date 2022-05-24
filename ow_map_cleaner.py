@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------------------------ #
-#                              Overwatch Map Cleaner v1.2                              #
+#                              Overwatch Map Cleaner v1.3                              #
 #                                    by stickercake                                    #
 #                                                                                      #
 #         IMPORTANT: Click [Window] > [Toggle System Console] to see progress!         #
@@ -75,7 +75,7 @@ def find_map_root():
     for obj in objects:
         if not obj.parent and obj.children:
             for child in obj.children:
-                if child.name.endswith('_DETAILS'):
+                if child.name.endswith('_OBJECTS'):
                     return obj
 
 root = find_map_root()
@@ -89,7 +89,7 @@ mesh_joins = dict()
 mats_missing = list()
 blacklist = list()
 broken_groups = dict()
-delete_childless = ["EMPTY", "ARMATURE"]
+delete_childless = ['EMPTY', 'ARMATURE']
 
 missing_tex_name = root.name + '_BROKEN'
 missing_tex = D.objects.get(missing_tex_name)
@@ -143,10 +143,10 @@ def find_untextured_mats():
                     mats_grass.append(mat)
     
     if Fix_Grass_Materials:
-        print('Fixed {0} grass materials'.format(len(mats_grass)))
+        print(f'Fixed {len(mats_grass)} grass materials')
     if Remove_Dev_Objects:
         users = sum(mat.users for mat in blacklist)
-        print('Found {0} untextured material uses'.format(users))
+        print(f'Found {users} untextured material uses')
 
 
 
@@ -155,20 +155,41 @@ def print_action(obj, name, force=False):
     if Print_Actions or force:
         print(name.ljust(9) + obj.name)
 
+# Sets obj's parent to parent (keeping transform).
+def set_parent(obj, parent):
+    matrixcopy = obj.matrix_world.copy()
+    obj.parent = parent
+    obj.matrix_world = matrixcopy
+
 # Sets child's parent to obj's parent.
 def parent_up(obj, child):
-    matrixcopy = child.matrix_world.copy()
-    child.parent = obj.parent
-    child.matrix_world = matrixcopy
+    set_parent(child, obj.parent)
+
 
 
 # Cleanup obj and its descendants.
-# Returns whatever obj is replaced by (Object | list of Objects | None).
+# Returns whatever obj is replaced with (Object | list of Objects | None).
 def clean(obj):
     children = obj.children
     childcount = len(children)
     is_armature = obj.type == 'ARMATURE'
     arm_children = []
+    
+    if is_armature:
+        # "groupcount_all" will be -1 if obj's children don't
+        # all have the same number of vertex groups
+        groupcount_all = -1
+        for ch in children:
+            if ch.type != 'MESH':
+                continue
+            
+            count = len(ch.vertex_groups)
+            
+            if groupcount_all < 0:
+                groupcount_all = count
+            elif groupcount_all != count:
+                groupcount_all = -1
+                break
     
     for ch in children:
         result = clean(ch)
@@ -177,16 +198,16 @@ def clean(obj):
         elif is_armature:
             vgroups = ch.vertex_groups
             groupcount = len(vgroups)
-            
-            # Shatter physics meshes are controlled by more than one bone
-            if childcount > 1 and groupcount > 1:
-                print(obj.name)
+
+            # Shatter physics meshes are (usually) controlled by more than one bone
+            if groupcount_all < 0 and groupcount > 1:
                 to_remove.add(ch)
                 childcount -= 1
+                continue
             
             if Keep_Prop_Armatures:
                 child = ch
-            elif groupcount <= 1:
+            elif groupcount <= 1 or groupcount_all >= 0:
                 parent_up(obj, ch)
                 ch.modifiers.clear()
                 ch.vertex_groups.clear()
@@ -224,9 +245,7 @@ def clean(obj):
             group = broken_groups.setdefault(id, [])
             group.append(obj)
             obj.material_slots[0].material = group[0].material_slots[0].material
-            matrixcopy = obj.matrix_world.copy()
-            obj.parent = missing_tex
-            obj.matrix_world = matrixcopy
+            set_parent(obj, missing_tex)
             count_up(True)
             return None
     
@@ -258,15 +277,15 @@ def clean(obj):
         count_up(True)
         return arm_children
     
-    # Remove Empties without children
+    # Remove Empties/Armatures without children
     elif childcount == 0 and obj.type in delete_childless and obj != objects_parent:
         print_action(obj, 'Empty')
         to_remove.add(obj)
         count_up(True)
         return None
     
-    # Remove Empties with one child (keeping its transform)
-    elif childcount == 1 and obj.type == 'EMPTY':
+    # Reduce Empties/Armatures with one child (move child up in hierarchy)
+    elif childcount == 1 and (obj.type == 'EMPTY' or (Keep_Prop_Armatures and is_armature)):
         print_action(obj, 'Reduce')
         parent_up(obj, child)
         to_remove.add(obj)
@@ -295,7 +314,7 @@ def count_up(action=False):
         changes += 1
     
     if count % 500 == 0:
-        print('Checked {0}/{1} objects ({2} changes)'.format(count, obj_count, changes))
+        print(f'Checked {count}/{obj_count} objects ({changes} changes)')
 
 # Merges multiple objects (obs) into one (joined).
 def join(obs, joined=None, skip_reuse=False, log=True, stats=False):
@@ -308,7 +327,7 @@ def join(obs, joined=None, skip_reuse=False, log=True, stats=False):
         return joined
     
     if log:
-        print('Joining {0} objects'.format(len(obs)))
+        print(f'Joining {len(obs)} objects')
     ctx = bpy.context.copy()
     ctx['active_object'] = joined
     ctx['selected_editable_objects'] = obs
@@ -323,28 +342,39 @@ def join(obs, joined=None, skip_reuse=False, log=True, stats=False):
         print('Join {0:.2f}s + Merge {1:.2f}s = {2:.2f}s'.format(t2-t1, t3-t2, t3-t1))
     return joined
 
-# Reuse similar mesh if it's already registered.
-def reuse_mesh(obj, obs=[]):
+# Generates an ID that should be the same for similar meshes.
+def get_reuse_key(obj):
     name = obj.data.name
     index = name.rfind('.')
     if index >= 0:
-        # [mesh name].[index]
+        # [mesh name].[instance index]
         name = name[0:index]
     
-    if name in mesh_joins:
+    # Some meshes share the same ID although they are different models.
+    # As a fast validator, append the vertex count to map keys.
+    suffix = str(len(obj.data.vertices))
+    
+    return name + '_' + suffix
+
+# Reuse similar mesh if it's already registered.
+def reuse_mesh(obj, obs=[], key=None):
+    if not key:
+        key = get_reuse_key(obj)
+    
+    if key in mesh_joins:
         # Reusable mesh exists
-        used = mesh_joins[name]
+        used = mesh_joins[key]
         if used == obj.data:
             # Reusable mesh already assigned
             return True
         
-        #print('Reusing mesh ' + used.name)
+        # print('Reusing mesh ' + used.name)
         for o in obs:
             if o != obj:
                 to_remove.add(o)
         
         unused = obj.data
-        obj.data = mesh_joins[name]
+        obj.data = mesh_joins[key]
         
         if unused.users == 0:
             D.meshes.remove(unused)
@@ -352,13 +382,16 @@ def reuse_mesh(obj, obs=[]):
             print('Mesh {0} still has {1} users!'.format(unused.name, unused.users))
         return True
     
-    mesh_joins[name] = obj.data
+    mesh_joins[key] = obj.data
     return False
 
 # Merges all vertices of obj's mesh.
 def remove_doubles(obj, skip_reuse=False, log=False):
-    if not skip_reuse and reuse_mesh(obj):
-        return
+    if not skip_reuse:
+        reuse_key = get_reuse_key(obj)
+        
+        if reuse_mesh(obj, key=reuse_key):
+            return
     
     m = obj.data
     count = len(m.vertices)
@@ -373,7 +406,12 @@ def remove_doubles(obj, skip_reuse=False, log=False):
     
     diff = count - len(m.vertices)
     if log and diff > 1000:
-        print('Removed {0} vertices'.format(diff))
+        print(f'Removed {diff} vertices')
+    
+    # Generate new reuse key, as it is dependent on vertex count
+    if not skip_reuse:
+        key = get_reuse_key(obj)
+        mesh_joins[key] = m
 
 # Activates auto smooth normals on obj.
 def fix_merged_normals(obj):
@@ -397,7 +435,7 @@ def clean_everything():
     
     for obj in root.children:
         if obj.type == 'EMPTY' and not obj == missing_tex:
-            print('--- ' + obj.name)
+            print(f'--- {obj.name}')
             
             if obj.name.endswith('_OBJECTS'):
                 objects_parent = obj
@@ -413,12 +451,15 @@ def finish_deletions():
     count = 0
     rmv_count = len(to_remove)
     
-    print('Deleting {0} objects...'.format(rmv_count))
+    print(f'Deleting {rmv_count} objects...')
     
     for obj in to_remove:
         if obj.users:
-            obj.users_collection[0].objects.unlink(obj)
-            #D.objects.remove(obj)
+            try:
+                obj.users_collection[0].objects.unlink(obj)
+            except:
+                print(f"Couldn't unlink {obj.name}! Users: {obj.users} / Collections: {obj.users_collection}")
+                D.objects.remove(obj)
         count += 1
         
         if count % 1000 == 0:
@@ -443,8 +484,9 @@ def run():
     #print('Clearing all orphaned data-blocks without any users from the file...')
     #bpy.ops.outliner.orphans_purge(C.copy())
     
-    if Join_Map_Mesh > 0 and len(merge) > Join_Map_Mesh:
-        print('Joining {0} map objects...'.format(len(merge)))
+    merge_count = len(merge)
+    if Join_Map_Mesh > 0 and merge_count > Join_Map_Mesh:
+        print(f'Joining {merge_count} map objects...')
         i = 0
         for merge_part in split(merge, Join_Map_Mesh):
             i += 1
@@ -455,9 +497,10 @@ def run():
             
             if joined:
                 joined.name = objects_parent_name + '.' + str(i).rjust(3, '0')
-            print('- Joined part {0}/{1}'.format(i, Join_Map_Mesh))
+            print(f'- Joined part {i}/{Join_Map_Mesh}')
     
-    print('Joining {0} broken material groups'.format(len(broken_groups)))
+    broken_count = len(broken_groups)
+    print(f'Joining {broken_count} broken material groups')
     for key in broken_groups:
         arr = broken_groups[key]
         if len(arr) > 1:
@@ -465,14 +508,15 @@ def run():
     
     obj_count_2 = len(objects)
     if obj_count_2 < obj_count:
-        print('Reduced hierarchy object count from {0} to {1}'.format(obj_count, obj_count_2))
+        print(f'Reduced hierarchy object count from {obj_count} to {obj_count_2}')
     
     mesh_count_2 = count_used_meshes()
     if mesh_count_2 < mesh_count:
-        print('Reduced mesh count from {0} to {1}'.format(mesh_count, mesh_count_2))
+        print(f'Reduced mesh count from {mesh_count} to {mesh_count_2}')
     
     seconds = time.time() - start_seconds
-    print('\nDone! ({0})\n'.format(str(datetime.timedelta(seconds=seconds))))
+    delta = datetime.timedelta(seconds=seconds)
+    print(f'\nDone! ({delta})\n')
     
     if broken_groups:
         print((('There are {0} objects with broken materials located in '
