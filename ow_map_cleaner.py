@@ -119,7 +119,7 @@ def find_untextured_mats():
     mats_grass = list()
 
     for mat in D.materials:
-        if mat.use_nodes and mat.name.startswith(root.name):
+        if mat.use_nodes:
             if Remove_Dev_Objects:
                 albedo = mat.node_tree.nodes.get('Albedo + AO')
                 if not albedo:
